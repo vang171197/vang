@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Anki Dialogue → CSV (17 fields, pipe-delimited)</title>
+<title>Anki Dialogue → CSV (17 fields, pipe, ID first)</title>
 <style>
   :root { --pad:16px; }
   body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans",Arial,sans-serif;margin:var(--pad);}
@@ -25,8 +25,8 @@
 <body>
   <h1>Anki Dialogue → CSV (17 fields)</h1>
   <div class="hint">
-    Xuất <b>CSV 17 cột (không header)</b> với <b>delimiter = “|”</b>: <br>
-    <code>1–5: (empty)</code> • <code>6–11: English A1,B1,A2,B2,A3,B3</code> • <code>12–17: 日本語 A1,B1,A2,B2,A3,B3</code>
+    Xuất <b>17 cột (không header)</b> với <b>delimiter = “|”</b>:<br>
+    <code>1:ID • 2–5:(empty) • 6–11: EN A1..B3 • 12–17: JP A1..B3</code>
   </div>
 
   <div class="row">
@@ -43,6 +43,15 @@ B: ...
 💬 English
 A: ...
 B: ...
+...
+
+👥 日本語
+A: ...
+B: ...
+...
+💬 English
+A: ...
+B: ...
 ..."></textarea>
 
   <div id="preview"></div>
@@ -52,14 +61,13 @@ B: ...
 function norm(s){return (s||"").replace(/\r\n/g,"\n").replace(/\r/g,"\n");}
 function escapeHTML(x){return String(x??"").replace(/&/g,"&amp;").replace(/</g,"&lt;");}
 
-// Tách block theo tiêu đề 日本語
+// Tách mỗi hội thoại bắt đầu tại dòng có '日本語'
 function splitBlocks(all){
   const t = norm(all).trim();
   if(!t) return [];
   return t.split(/(?=^[ \t]*(?:👥\s*)?日本語[ \t]*$)/m).filter(x=>x.trim());
 }
 
-// Lấy các câu trong section
 function extractSection(lines, headerRegex){
   let start = -1;
   for(let i=0;i<lines.length;i++){
@@ -77,7 +85,7 @@ function extractSection(lines, headerRegex){
   return out;
 }
 
-// Lấy A/B theo thứ tự, tối đa 3 cặp, thiếu thì điền ""
+// Lấy lượt A/B tối đa 3 cặp, thiếu thì điền ""
 function pickTurns(sectionLines){
   const turns=[];
   for(const raw of sectionLines){
@@ -93,8 +101,8 @@ function pickTurns(sectionLines){
   return out;
 }
 
-// Parse 1 block → row 17 cột
-function parseOneBlock(blockText){
+// Parse 1 block → row 17 cột (có ID ở cột 1)
+function parseOneBlock(blockText, idx1){
   const lines = norm(blockText).split("\n").map(s=>s.trimEnd());
   const jpLines = extractSection(lines, /^[ \t]*(?:👥\s*)?日本語[ \t]*$/);
   const enLines = extractSection(lines, /^[ \t]*(?:💬\s*)?English[ \t]*$/i);
@@ -106,39 +114,42 @@ function parseOneBlock(blockText){
   const jp6 = pickTurns(jpLines);
   const en6 = pickTurns(enLines);
 
-  const hasPair = (en6[0] && en6[1]); // ít nhất phải có A1/B1 EN
+  // Ít nhất cần EN A1/B1
+  const hasPair = (en6[0] && en6[1]);
 
-  // Tạo 17 cột: 1–5 trống, 6–11 EN, 12–17 JP
+  // 17 cột: 1=ID, 2–5 blank, 6–11 EN, 12–17 JP
   const row = Array(17).fill("");
+  row[0] = String(idx1); // ID tự tăng (1-based)
   for(let i=0;i<6;i++){ row[5+i]  = en6[i]; }  // 6..11
   for(let i=0;i<6;i++){ row[11+i] = jp6[i]; }  // 12..17
 
-  return { ok: hasPair, reason: hasPair?"":"Thiếu cặp A1/B1 EN", row };
+  return { ok: hasPair, reason: hasPair?"":"Thiếu cặp EN A1/B1", row };
 }
 
-// Parse toàn bộ input
 function parseAll(input){
   const blocks = splitBlocks(input);
   const rows=[]; const issues=[];
+  let counter = 1;
   blocks.forEach((blk, idx)=>{
-    const r = parseOneBlock(blk);
-    if(r.ok){ rows.push(r.row); }
+    const r = parseOneBlock(blk, counter);
+    if(r.ok){ rows.push(r.row); counter++; }
     else { issues.push({index:idx+1, reason:r.reason}); }
   });
   return { rows, issues, total: blocks.length };
 }
 
-// CSV không header, delimiter = '|'
-function toCSVNoHeader(rows){
+// Xuất không header, delimiter = '|'
+function toPipe(rows){
   const esc = v=>{
     const s=String(v??"");
-    return s.includes("|") || s.includes("\n") ? `"${s.replace(/"/g,'""')}"` : s;
+    // Nếu có | hoặc xuống dòng → quote theo CSV rule
+    return (s.includes("|") || s.includes("\n")) ? `"${s.replace(/"/g,'""')}"` : s;
   };
   return rows.map(r=>r.map(esc).join("|")).join("\n");
 }
 
-function downloadCSV(filename, text){
-  const blob = new Blob(["\uFEFF"+text], {type:"text/csv;charset=utf-8;"});
+function downloadFile(filename, text){
+  const blob = new Blob(["\uFEFF"+text], {type:"text/plain;charset=utf-8;"});
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href=url; a.download=filename;
@@ -146,7 +157,7 @@ function downloadCSV(filename, text){
   setTimeout(()=>{ document.body.removeChild(a); URL.revokeObjectURL(url); },0);
 }
 
-// ===== UI logic =====
+// ===== UI =====
 const EXAMPLE = `👥 日本語
 A: 明日時間ある？
 B: うん、午後なら大丈夫。
@@ -180,31 +191,28 @@ const $input = document.getElementById("input");
 const $status = document.getElementById("status");
 const $preview = document.getElementById("preview");
 
-function currentParsed(){
-  return parseAll($input.value);
-}
-
 function renderPreview(rows, issues){
   if(!rows.length){
     $preview.innerHTML = issues.length
-      ? `<div class="warn">Không có hội thoại hợp lệ.<br>Lỗi: ${
-          issues.map(i=>`#${i.index} (${escapeHTML(i.reason)})`).join("; ")
-        }</div>`
+      ? `<div class="warn">Không có hội thoại hợp lệ. Lỗi: ${issues.map(i=>`#${i.index} (${i.reason})`).join("; ")}</div>`
       : "";
     return;
   }
   const head = `<tr>
-    <th>#</th>
+    <th>#ID</th>
     <th>EN A1</th><th>EN B1</th><th>EN A2</th><th>EN B2</th><th>EN A3</th><th>EN B3</th>
     <th>JP A1</th><th>JP B1</th><th>JP A2</th><th>JP B2</th><th>JP A3</th><th>JP B3</th>
   </tr>`;
-  const body = rows.slice(0,5).map((r,idx)=>{
+  const body = rows.slice(0,5).map((r)=>{
+    const id = r[0];
     const cells = r.slice(5).map(c=>`<td>${escapeHTML(c)}</td>`).join("");
-    return `<tr><td class="muted">#${idx+1}</td>${cells}</tr>`;
+    return `<tr><td class="muted">${escapeHTML(id)}</td>${cells}</tr>`;
   }).join("");
   const issueNote = issues.length ? `<div class="warn">Bỏ qua ${issues.length} hội thoại lỗi</div>` : "";
   $preview.innerHTML = `<table>${head}${body}</table><div class="status">Xem trước tối đa 5 hội thoại • Tổng hợp lệ: ${rows.length}</div>${issueNote}`;
 }
+
+function currentParsed(){ return parseAll($input.value); }
 
 document.getElementById("btnExample").addEventListener("click", ()=>{
   $input.value = EXAMPLE;
@@ -212,23 +220,17 @@ document.getElementById("btnExample").addEventListener("click", ()=>{
   $status.textContent = `${rows.length}/${total} hội thoại hợp lệ`;
   renderPreview(rows, issues);
 });
-
 document.getElementById("btnPreview").addEventListener("click", ()=>{
   const {rows,issues,total} = currentParsed();
   $status.textContent = `${rows.length}/${total} hội thoại hợp lệ`;
   renderPreview(rows, issues);
 });
-
 document.getElementById("btnDownload").addEventListener("click", ()=>{
   const {rows,issues,total} = currentParsed();
-  if(!rows.length){
-    alert("Không có hội thoại hợp lệ để xuất.");
-    return;
-  }
-  const csv = toCSVNoHeader(rows);
-  downloadCSV("anki_dialogue_17fields.csv", csv);
+  if(!rows.length){ alert("Không có hội thoại hợp lệ để xuất."); return; }
+  const text = toPipe(rows);
+  downloadFile("anki_dialogue_17fields_pipe.csv", text);
 });
-
 $input.addEventListener("input", ()=>{
   const {rows,total} = currentParsed();
   $status.textContent = `${rows.length}/${total} hội thoại hợp lệ`;
