@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Anki Dialogue → CSV (18 fields)</title>
+<style>
+  :root { --pad:16px; }
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans",Arial,sans-serif;margin:var(--pad);}
+  h1{font-size:22px;margin:0 0 8px}
+  .hint{color:#555;font-size:14px;margin-bottom:12px}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:8px 0}
+  .btn{padding:12px 16px;border:1px solid #ccc;border-radius:10px;background:#f4f4f6;cursor:pointer;font-size:16px}
+  .btn.primary{background:#0b5fff;border-color:#0b5fff;color:#fff}
+  .btn:active{transform:translateY(1px)}
+  textarea{width:100%;height:50vh;padding:12px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:15px;line-height:1.5;border:1px solid #ddd;border-radius:10px}
+  .status{font-size:14px;color:#444}
+  table{width:100%;border-collapse:collapse;margin-top:10px;font-size:13px}
+  th,td{border:1px solid #eee;padding:6px;vertical-align:top}
+  th{background:#fafafa;text-align:left}
+  .warn{color:#b00020}
+</style>
+</head>
+<body>
+  <h1>Anki Dialogue → CSV (18 fields)</h1>
+  <div class="hint">
+    Xuất <b>CSV 18 cột (không header)</b> cho Anki theo thứ tự:<br>
+    <code>1–6: (empty) • 7–12: English A1,B1,A2,B2,A3,B3 • 13–18: 日本語 A1,B1,A2,B2,A3,B3</code><br>
+    Dán 1 hoặc nhiều hội thoại; mỗi hội thoại có hai phần: <b>👥 日本語</b> và <b>💬 English</b>.
+  </div>
+
+  <div class="row">
+    <button class="btn" id="btnExample">Dán ví dụ</button>
+    <button class="btn" id="btnPreview">Preview</button>
+    <button class="btn primary" id="btnDownload">Tải CSV</button>
+    <span class="status" id="status">0 hội thoại hợp lệ</span>
+  </div>
+
+  <textarea id="input" placeholder="👥 日本語
+A: ...
+B: ...
+...
+💬 English
+A: ...
+B: ...
+..."></textarea>
+
+  <div id="preview"></div>
+
+<script>
+const EXAMPLE = `👥 日本語
+A: ちょっと熱っぽいんだけど、今日病院に行ったほうがいいかな？
+B: うん、そのほうがいいと思うよ。頭痛とかはある？
+A: 少しだけ。あと、昨日から喉も痛いんだ。
+B: じゃあ、内科に行くといいよ。近くにいい病院があるよ。
+A: ありがとう。予約が必要かな？
+B: 午前中なら予約なしでも診てもらえるはずだよ。
+
+💬 English
+A: I feel a bit feverish. Do you think I should go to the hospital today?
+B: Yeah, I think that’s a good idea. Do you have a headache, too?
+A: A little. And my throat has been sore since yesterday.
+B: Then you should go to the internal medicine department. There’s a good clinic nearby.
+A: Thanks. Do I need to make an appointment?
+B: If you go in the morning, they should see you without one.
+`;
+
+function norm(s){return (s||"").replace(/\r\n/g,"\n").replace(/\r/g,"\n");}
+
+function splitBlocks(all){
+  // Tách theo mỗi lần gặp tiêu đề 日本語 (có/không emoji)
+  const t = norm(all).trim();
+  if(!t) return [];
+  const parts = t.split(/(?=^.*(?:👥\s*)?日本語\s*$)/m).filter(x=>x.trim());
+  return parts;
+}
+
+function extractSection(lines, headerRegex){
+  // Lấy đoạn từ headerRegex tới trước header khác
+  let start = -1;
+  for(let i=0;i<lines.length;i++){
+    if(headerRegex.test(lines[i])){ start = i+1; break; }
+  }
+  if(start<0) return [];
+  const out=[];
+  for(let i=start;i<lines.length;i++){
+    const line = lines[i];
+    if(/^.*(?:👥\s*)?日本語\s*$/.test(line) || /^.*(?:💬\s*)?English\s*$/i.test(line)){
+      break;
+    }
+    out.push(line);
+  }
+  return out;
+}
+
+function pickTurns(sectionLines){
+  // Lấy các câu bắt đầu bằng "A:" hoặc "B:"; cắt nhãn
+  const turns=[];
+  for(const raw of sectionLines){
+    const m = raw.match(/^\s*([AB])\s*:\s*(.+)\s*$/);
+    if(m){ turns.push({speaker:m[1], text:m[2]}); }
+  }
+  // Biến thành mảng [A1,B1,A2,B2,A3,B3] (tối đa 6, có thể ít)
+  const out=[];
+  let aCount=0,bCount=0;
+  for(const t of turns){
+    if(t.speaker==="A"){
+      if(aCount<3){ out[2*aCount] = t.text; aCount++; }
+    }else{
+      if(bCount<3){ out[2*bCount+1] = t.text; bCount++; }
+    }
+  }
+  // Đảm bảo độ dài 6, điền "" nếu thiếu
+  for(let i=0;i<6;i++){ if(out[i]==null) out[i]=""; }
+  return out;
+}
+
+function parseOneBlock(blockText){
+  const lines = norm(blockText).split("\n");
+  const jpLines = extractSection(lines, /^.*(?:👥\s*)?日本語\s*$/);
+  const enLines = extractSection(lines, /^.*(?:💬\s*)?English\s*$/i);
+
+  if(!jpLines.length || !enLines.length) return { ok:false, reason:"Thiếu phần 日本語 hoặc English", row:null };
+
+  const jp6 = pickTurns(jpLines);
+  const en6 = pickTurns(enLines);
+
+  // Tạo 18 cột: 1–6 empty, 7–12 EN, 13–18 JP
+  const row = Array(18).fill("");
+  for(let i=0;i<6;i++){ row[6+i]  = en6[i]; }   // 7..12
+  for(let i=0;i<6;i++){ row[12+i] = jp6[i]; }   // 13..18
+
+  // Tối thiểu phải có cặp A1/B1 (4 câu) hoặc đủ 6 câu; nếu chỉ có 2 câu đơn lẻ → bỏ
+  const enHasPair = (en6[0]||en6[1]) && (en6[2]||en6[3]) ? true : (en6[0]&&en6[1]);
+  const jpHasPair = (jp6[0]||jp6[1]) && (jp6[2]||jp6[3]) ? true : (jp6[0]&&jp6[1]);
+  const valid = enHasPair && jpHasPair;
+
+  return { ok: valid, reason: valid?"":"Không đủ tối thiểu (cần ≥ A1/B1)", row };
+}
+
+function parseAll(input){
+  const blocks = splitBlocks(input);
+  const rows=[]; const issues=[];
+  blocks.forEach((blk,idx)=>{
+    const r = parseOneBlock(blk);
+    if(r.ok){ rows.push(r.row); } else { issues.push({index:idx+1, reason:r.reason}); }
+  });
+  return { rows, issues, total: blocks.length };
+}
+
+function toCSVNoHeader(rows){
+  const esc = v=>{
+    const s=String(v??"");
+    const need=/[",\n]/.test(s);
+    const e=s.replace(/"/g,'""');
+    return need?`"${e}"`:e;
+  };
+  return rows.map(r=>r.map(esc).join(",")).join("\n");
+}
+
+function downloadCSV(filename, text){
+  const blob = new Blob(["\uFEFF"+text], {type:"text/csv;charset=utf-8;"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href=url; a.download=filename;
+  document.body.appendChild(a); a.click();
+  setTimeout(()=>{ document.body.removeChild(a); URL.revokeObjectURL(url); },0);
+}
+
+function renderPreview(rows, issues){
+  const el = document.getElementById("preview");
+  if(!rows.length){
+    el.innerHTML = issues.length
+      ? `<div class="warn">Không có hội thoại hợp lệ. Lỗi: ${issues.map(i=>`#${i.index}(${i.reason})`).join(", ")}</div>`
+      : "";
+    return;
+  }
+  const head = `<tr>
+    <th>1</th><th>2</th><th>3</th><th>4</th><th>5</th><th>6</th>
+    <th>7 EN A1</th><th>8 EN B1</th><th>9 EN A2</th><th>10 EN B2</th><th>11 EN A3</th><th>12 EN B3</th>
+    <th>13 JP A1</th><th>14 JP B1</th><th>15 JP A2</th><th>16 JP B2</th><th>17 JP A3</th><th>18 JP B3</th></tr>`;
+  const body = rows.slice(0,5).map(r=>`<tr>${r.map(c=>`<td>${c?c.replace(/&/g,"&amp;").replace(/</g,"&lt;"):""}</td>`).join("")}</tr>`).join("");
+  const issueNote = issues.length ? `<div class="warn">Bỏ qua ${issues.length} khối lỗi.</div>` : "";
+  el.innerHTML = `<table>${head}${body}</table><div class="status">Xem trước tối đa 5 hội thoại • Tổng hợp lệ: ${rows.length}</div>${issueNote}`;
+}
+
+const $input = document.getElementById("input");
+const $status = document.getElementById("status");
+
+document.getElementById("btnExample").addEventListener("click", ()=>{
+  $input.value = EXAMPLE;
+  const {rows,issues,total} = parseAll($input.value);
+  $status.textContent = `${rows.length}/${total} hội thoại hợp lệ`;
+  renderPreview(rows, issues);
+});
+
+document.getElementById("btnPreview").addEventListener("click", ()=>{
+  const {rows,issues,total} = parseAll($input.value);
+  $status.textContent = `${rows.length}/${total} hội thoại hợp lệ`;
+  renderPreview(rows, issues);
+});
+
+document.getElementById("btnDownload").addEventListener("click", ()=>{
+  const {rows,issues,total} = parseAll($input.value);
+  if(!rows.length){
+    alert("Không có hội thoại hợp lệ để xuất.");
+    return;
+  }
+  const csv = toCSVNoHeader(rows);
+  downloadCSV("anki_dialogue_18fields.csv", csv);
+});
+
+// cập nhật đếm nhanh khi nhập
+$input.addEventListener("input", ()=>{
+  const {rows,total} = parseAll($input.value);
+  $status.textContent = `${rows.length}/${total} hội thoại hợp lệ`;
+});
+</script>
+</body>
+</html>
