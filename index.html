@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Anki Dialogue → CSV (18 fields)</title>
+<title>Anki Dialogue → CSV (18 fields) — Smart Split</title>
 <style>
   :root { --pad:16px; }
   body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans",Arial,sans-serif;margin:var(--pad);}
@@ -19,24 +19,37 @@
   th,td{border:1px solid #eee;padding:6px;vertical-align:top}
   th{background:#fafafa;text-align:left}
   .warn{color:#b00020}
+  .ok{color:#256c2c}
+  .muted{color:#666}
+  .badge{display:inline-block;padding:2px 6px;border-radius:6px;background:#eee;font-size:12px;margin-left:6px}
 </style>
 </head>
 <body>
   <h1>Anki Dialogue → CSV (18 fields)</h1>
   <div class="hint">
-    Xuất <b>CSV 18 cột (không header)</b> cho Anki theo thứ tự:<br>
-    <code>1–6: (empty) • 7–12: English A1,B1,A2,B2,A3,B3 • 13–18: 日本語 A1,B1,A2,B2,A3,B3</code><br>
-    Dán 1 hoặc nhiều hội thoại; mỗi hội thoại có hai phần: <b>👥 日本語</b> và <b>💬 English</b>.
+    Xuất <b>CSV 18 cột (không header)</b> theo thứ tự: <br>
+    <code>1–6: (empty)</code> • <code>7–12: English A1,B1,A2,B2,A3,B3</code> • <code>13–18: 日本語 A1,B1,A2,B2,A3,B3</code><br>
+    Dán nhiều hội thoại; mỗi hội thoại phải có 2 phần: <b>👥 日本語</b> và <b>💬 English</b>.
   </div>
 
   <div class="row">
     <button class="btn" id="btnExample">Dán ví dụ</button>
     <button class="btn" id="btnPreview">Preview</button>
     <button class="btn primary" id="btnDownload">Tải CSV</button>
-    <span class="status" id="status">0 hội thoại hợp lệ</span>
+    <label><input type="checkbox" id="chkDedup" checked> Loại trùng theo EN A1</label>
+    <span class="status" id="status">0/0 hội thoại hợp lệ</span>
   </div>
 
   <textarea id="input" placeholder="👥 日本語
+A: ...
+B: ...
+...
+💬 English
+A: ...
+B: ...
+...
+
+👥 日本語
 A: ...
 B: ...
 ...
@@ -48,35 +61,21 @@ B: ...
   <div id="preview"></div>
 
 <script>
-const EXAMPLE = `👥 日本語
-A: ちょっと熱っぽいんだけど、今日病院に行ったほうがいいかな？
-B: うん、そのほうがいいと思うよ。頭痛とかはある？
-A: 少しだけ。あと、昨日から喉も痛いんだ。
-B: じゃあ、内科に行くといいよ。近くにいい病院があるよ。
-A: ありがとう。予約が必要かな？
-B: 午前中なら予約なしでも診てもらえるはずだよ。
-
-💬 English
-A: I feel a bit feverish. Do you think I should go to the hospital today?
-B: Yeah, I think that’s a good idea. Do you have a headache, too?
-A: A little. And my throat has been sore since yesterday.
-B: Then you should go to the internal medicine department. There’s a good clinic nearby.
-A: Thanks. Do I need to make an appointment?
-B: If you go in the morning, they should see you without one.
-`;
-
+// ===== Helpers =====
 function norm(s){return (s||"").replace(/\r\n/g,"\n").replace(/\r/g,"\n");}
+function escapeHTML(x){return String(x??"").replace(/&/g,"&amp;").replace(/</g,"&lt;");}
 
+// Tách thành các block, mỗi block bắt đầu tại dòng chứa '日本語' (có thể có emoji 👥)
 function splitBlocks(all){
-  // Tách theo mỗi lần gặp tiêu đề 日本語 (có/không emoji)
   const t = norm(all).trim();
   if(!t) return [];
-  const parts = t.split(/(?=^.*(?:👥\s*)?日本語\s*$)/m).filter(x=>x.trim());
+  // Cắt trước mỗi tiêu đề 日本語 ở đầu dòng (multiline)
+  const parts = t.split(/(?=^[ \t]*(?:👥\s*)?日本語[ \t]*$)/m).filter(x=>x.trim());
   return parts;
 }
 
+// Lấy các dòng sau headerRegex cho đến trước header tiếp theo
 function extractSection(lines, headerRegex){
-  // Lấy đoạn từ headerRegex tới trước header khác
   let start = -1;
   for(let i=0;i<lines.length;i++){
     if(headerRegex.test(lines[i])){ start = i+1; break; }
@@ -85,7 +84,7 @@ function extractSection(lines, headerRegex){
   const out=[];
   for(let i=start;i<lines.length;i++){
     const line = lines[i];
-    if(/^.*(?:👥\s*)?日本語\s*$/.test(line) || /^.*(?:💬\s*)?English\s*$/i.test(line)){
+    if(/^[ \t]*(?:👥\s*)?日本語[ \t]*$/.test(line) || /^[ \t]*(?:💬\s*)?English[ \t]*$/i.test(line)){
       break;
     }
     out.push(line);
@@ -93,61 +92,60 @@ function extractSection(lines, headerRegex){
   return out;
 }
 
+// Trích các lượt A/B; trả về mảng [A1,B1,A2,B2,A3,B3], thiếu thì điền rỗng
 function pickTurns(sectionLines){
-  // Lấy các câu bắt đầu bằng "A:" hoặc "B:"; cắt nhãn
   const turns=[];
   for(const raw of sectionLines){
     const m = raw.match(/^\s*([AB])\s*:\s*(.+)\s*$/);
     if(m){ turns.push({speaker:m[1], text:m[2]}); }
   }
-  // Biến thành mảng [A1,B1,A2,B2,A3,B3] (tối đa 6, có thể ít)
-  const out=[];
-  let aCount=0,bCount=0;
+  const out = Array(6).fill("");
+  let a=0,b=0;
   for(const t of turns){
-    if(t.speaker==="A"){
-      if(aCount<3){ out[2*aCount] = t.text; aCount++; }
-    }else{
-      if(bCount<3){ out[2*bCount+1] = t.text; bCount++; }
-    }
+    if(t.speaker==="A" && a<3){ out[2*a] = t.text; a++; }
+    if(t.speaker==="B" && b<3){ out[2*b+1] = t.text; b++; }
   }
-  // Đảm bảo độ dài 6, điền "" nếu thiếu
-  for(let i=0;i<6;i++){ if(out[i]==null) out[i]=""; }
   return out;
 }
 
+// Parse 1 block → row 18 cột + đánh giá hợp lệ
 function parseOneBlock(blockText){
-  const lines = norm(blockText).split("\n");
-  const jpLines = extractSection(lines, /^.*(?:👥\s*)?日本語\s*$/);
-  const enLines = extractSection(lines, /^.*(?:💬\s*)?English\s*$/i);
+  const lines = norm(blockText).split("\n").map(s=>s.trimEnd());
+  const jpLines = extractSection(lines, /^[ \t]*(?:👥\s*)?日本語[ \t]*$/);
+  const enLines = extractSection(lines, /^[ \t]*(?:💬\s*)?English[ \t]*$/i);
 
-  if(!jpLines.length || !enLines.length) return { ok:false, reason:"Thiếu phần 日本語 hoặc English", row:null };
+  if(!jpLines.length || !enLines.length) {
+    return { ok:false, reason:"Thiếu phần 日本語 hoặc English", row:null, meta:{enA1:""} };
+  }
 
   const jp6 = pickTurns(jpLines);
   const en6 = pickTurns(enLines);
 
-  // Tạo 18 cột: 1–6 empty, 7–12 EN, 13–18 JP
+  // ít nhất cần có cặp A1/B1 ở cả JP và EN
+  const jpPair = (jp6[0] && jp6[1]);
+  const enPair = (en6[0] && en6[1]);
+
   const row = Array(18).fill("");
-  for(let i=0;i<6;i++){ row[6+i]  = en6[i]; }   // 7..12
-  for(let i=0;i<6;i++){ row[12+i] = jp6[i]; }   // 13..18
+  for(let i=0;i<6;i++){ row[6+i]  = en6[i]; }  // 7..12
+  for(let i=0;i<6;i++){ row[12+i] = jp6[i]; }  // 13..18
 
-  // Tối thiểu phải có cặp A1/B1 (4 câu) hoặc đủ 6 câu; nếu chỉ có 2 câu đơn lẻ → bỏ
-  const enHasPair = (en6[0]||en6[1]) && (en6[2]||en6[3]) ? true : (en6[0]&&en6[1]);
-  const jpHasPair = (jp6[0]||jp6[1]) && (jp6[2]||jp6[3]) ? true : (jp6[0]&&jp6[1]);
-  const valid = enHasPair && jpHasPair;
-
-  return { ok: valid, reason: valid?"":"Không đủ tối thiểu (cần ≥ A1/B1)", row };
+  const ok = jpPair && enPair;
+  return { ok, reason: ok?"":"Thiếu tối thiểu cặp A1/B1", row, meta:{enA1: en6[0]||""} };
 }
 
+// Parse toàn bộ input
 function parseAll(input){
   const blocks = splitBlocks(input);
-  const rows=[]; const issues=[];
-  blocks.forEach((blk,idx)=>{
+  const rows=[]; const issues=[]; const metas=[];
+  blocks.forEach((blk, idx)=>{
     const r = parseOneBlock(blk);
-    if(r.ok){ rows.push(r.row); } else { issues.push({index:idx+1, reason:r.reason}); }
+    if(r.ok){ rows.push(r.row); metas.push({index: idx+1, enA1: r.meta.enA1}); }
+    else { issues.push({index: idx+1, reason: r.reason}); }
   });
-  return { rows, issues, total: blocks.length };
+  return { rows, issues, metas, total: blocks.length };
 }
 
+// CSV không header, auto-quote
 function toCSVNoHeader(rows){
   const esc = v=>{
     const s=String(v??"");
@@ -167,41 +165,99 @@ function downloadCSV(filename, text){
   setTimeout(()=>{ document.body.removeChild(a); URL.revokeObjectURL(url); },0);
 }
 
-function renderPreview(rows, issues){
-  const el = document.getElementById("preview");
+// ===== UI logic =====
+const EXAMPLE = `👥 日本語
+A: 明日時間ある？
+B: うん、午後なら大丈夫。
+A: 映画見に行かない？
+B: いいね！何時にする？
+
+💬 English
+A: Are you free tomorrow?
+B: Yeah, afternoon works.
+A: Want to go see a movie?
+B: Sounds good! What time?
+
+👥 日本語
+A: ちょっと熱っぽいんだけど、今日病院に行ったほうがいいかな？
+B: うん、そのほうがいいと思うよ。頭痛とかはある？
+A: 少しだけ。あと、昨日から喉も痛いんだ。
+B: じゃあ、内科に行くといいよ。近くにいい病院があるよ。
+A: ありがとう。予約が必要かな？
+B: 午前中なら予約なしでも診てもらえるはずだよ。
+
+💬 English
+A: I feel a bit feverish. Do you think I should go to the hospital today?
+B: Yeah, I think that’s a good idea. Do you have a headache, too?
+A: A little. And my throat has been sore since yesterday.
+B: Then you should go to the internal medicine department. There’s a good clinic nearby.
+A: Thanks. Do I need to make an appointment?
+B: If you go in the morning, they should see you without one.
+`;
+
+const $input = document.getElementById("input");
+const $status = document.getElementById("status");
+const $preview = document.getElementById("preview");
+const $chk = document.getElementById("chkDedup");
+
+function currentParsed(){
+  const parsed = parseAll($input.value);
+  // Dedup theo EN A1 (tiện để loại trùng block)
+  if($chk.checked){
+    const seen = new Set();
+    const keepRows=[]; const keepMetas=[];
+    parsed.rows.forEach((row, i)=>{
+      const key = parsed.metas[i]?.enA1 || "";
+      if(!seen.has(key)){
+        seen.add(key);
+        keepRows.push(row);
+        keepMetas.push(parsed.metas[i]);
+      }
+    });
+    parsed.rows = keepRows;
+    parsed.metas = keepMetas;
+  }
+  return parsed;
+}
+
+function renderPreview(rows, issues, metas){
   if(!rows.length){
-    el.innerHTML = issues.length
-      ? `<div class="warn">Không có hội thoại hợp lệ. Lỗi: ${issues.map(i=>`#${i.index}(${i.reason})`).join(", ")}</div>`
+    $preview.innerHTML = issues.length
+      ? `<div class="warn">Không có hội thoại hợp lệ.<br>Lỗi: ${
+          issues.map(i=>`#${i.index} (${escapeHTML(i.reason)})`).join("; ")
+        }</div>`
       : "";
     return;
   }
   const head = `<tr>
-    <th>1</th><th>2</th><th>3</th><th>4</th><th>5</th><th>6</th>
+    <th>#</th>
     <th>7 EN A1</th><th>8 EN B1</th><th>9 EN A2</th><th>10 EN B2</th><th>11 EN A3</th><th>12 EN B3</th>
-    <th>13 JP A1</th><th>14 JP B1</th><th>15 JP A2</th><th>16 JP B2</th><th>17 JP A3</th><th>18 JP B3</th></tr>`;
-  const body = rows.slice(0,5).map(r=>`<tr>${r.map(c=>`<td>${c?c.replace(/&/g,"&amp;").replace(/</g,"&lt;"):""}</td>`).join("")}</tr>`).join("");
-  const issueNote = issues.length ? `<div class="warn">Bỏ qua ${issues.length} khối lỗi.</div>` : "";
-  el.innerHTML = `<table>${head}${body}</table><div class="status">Xem trước tối đa 5 hội thoại • Tổng hợp lệ: ${rows.length}</div>${issueNote}`;
+    <th>13 JP A1</th><th>14 JP B1</th><th>15 JP A2</th><th>16 JP B2</th><th>17 JP A3</th><th>18 JP B3</th>
+  </tr>`;
+  const body = rows.slice(0,5).map((r,idx)=>{
+    const no = (metas[idx]?.index ?? idx+1);
+    const cells = r.slice(6).map(c=>`<td>${escapeHTML(c)}</td>`).join("");
+    return `<tr><td class="muted">#${no}</td>${cells}</tr>`;
+  }).join("");
+  const issueNote = issues.length ? `<div class="warn">Bỏ qua ${issues.length} hội thoại lỗi: ${issues.map(i=>`#${i.index}`).join(", ")}</div>` : "";
+  $preview.innerHTML = `<table>${head}${body}</table><div class="status">Xem trước tối đa 5 hội thoại • Tổng hợp lệ: ${rows.length}</div>${issueNote}`;
 }
-
-const $input = document.getElementById("input");
-const $status = document.getElementById("status");
 
 document.getElementById("btnExample").addEventListener("click", ()=>{
   $input.value = EXAMPLE;
-  const {rows,issues,total} = parseAll($input.value);
-  $status.textContent = `${rows.length}/${total} hội thoại hợp lệ`;
-  renderPreview(rows, issues);
+  const {rows,issues,metas,total} = currentParsed();
+  document.getElementById("status").textContent = `${rows.length}/${total} hội thoại hợp lệ`;
+  renderPreview(rows, issues, metas);
 });
 
 document.getElementById("btnPreview").addEventListener("click", ()=>{
-  const {rows,issues,total} = parseAll($input.value);
-  $status.textContent = `${rows.length}/${total} hội thoại hợp lệ`;
-  renderPreview(rows, issues);
+  const {rows,issues,metas,total} = currentParsed();
+  document.getElementById("status").textContent = `${rows.length}/${total} hội thoại hợp lệ`;
+  renderPreview(rows, issues, metas);
 });
 
 document.getElementById("btnDownload").addEventListener("click", ()=>{
-  const {rows,issues,total} = parseAll($input.value);
+  const {rows,issues,metas,total} = currentParsed();
   if(!rows.length){
     alert("Không có hội thoại hợp lệ để xuất.");
     return;
@@ -210,10 +266,9 @@ document.getElementById("btnDownload").addEventListener("click", ()=>{
   downloadCSV("anki_dialogue_18fields.csv", csv);
 });
 
-// cập nhật đếm nhanh khi nhập
 $input.addEventListener("input", ()=>{
-  const {rows,total} = parseAll($input.value);
-  $status.textContent = `${rows.length}/${total} hội thoại hợp lệ`;
+  const {rows,total} = currentParsed();
+  document.getElementById("status").textContent = `${rows.length}/${total} hội thoại hợp lệ`;
 });
 </script>
 </body>
