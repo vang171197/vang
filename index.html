@@ -64,7 +64,7 @@ function normalize(text){
 // Bắt section [日本語文] / [英語文] dạng nhiều dòng
 function pickSection(part, label){
   const re = new RegExp(
-    "\\[" + label + "\\]\\s*([\\s\\S]*?)(?=\\n\\[(?:日本語文|英語文)\\]|\\n🔎|\\n📌|\\n🖼|$)"
+    "\\[" + label + "\\]\\s*([\\s\\S]*?)(?=\\n\\[(?:日本語文|英語文)\\]|\\n👍|\\n🔎|\\n📌|\\n🖼|$)"
   );
   const m = part.match(re);
   return m ? m[1].trim() : "";
@@ -73,7 +73,7 @@ function pickSection(part, label){
 // Bắt nội dung sau emoji (🔎/📌/🖼) dạng nhiều dòng
 function pickLineOrMulti(part, emoji){
   const re = new RegExp(
-    emoji + "\\s*[^:：\\n]*\\s*[:：]?\\s*([\\s\\S]*?)(?=\\n\\[(?:日本語文|英語文)\\]|\\n🔎|\\n📌|\\n🖼|$)"
+    emoji + "\\s*[^:：\\n]*\\s*[:：]?\\s*([\\s\\S]*?)(?=\\n\\[(?:日本語文|英語文)\\]|\\n👍|\\n🔎|\\n📌|\\n🖼|$)"
   );
   const m = part.match(re);
   return m ? m[1].trim() : "";
@@ -89,13 +89,14 @@ function parseBlocks(text){
   for(const part of parts){
     const jp  = pickSection(part, "日本語文");
     const en  = pickSection(part, "英語文");
+    const qa  = pickLineOrMulti(part, "👍");
     const an  = pickLineOrMulti(part, "🔎");
     const key = pickLineOrMulti(part, "📌");
     const img = pickLineOrMulti(part, "🖼");
 
     if(jp){
       // 7 cột: JP | Analysis | Key | empty | Image | empty | EN
-      rows.push([jp, an, key, "", img, "", en]);
+      rows.push([jp, an, key, "", img, "", en, "", "", "", "", "", "", "", qa]);
     }
   }
   return rows;
